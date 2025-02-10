@@ -157,7 +157,7 @@ func (r *Request) BuildHTTPRequest() (*http.Request, error) {
 	return httpReq, nil
 }
 
-// Response wraps an http.Response to provide helper methods.
+// Response wraps a http.Response to provide helper methods.
 type Response struct {
 	*http.Response
 }

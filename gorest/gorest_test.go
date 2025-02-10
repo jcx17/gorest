@@ -7,7 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-func TestAPICLient(t *testing.T) {
+func TestGorest(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "APIClient Test Suite")
 }

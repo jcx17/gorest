@@ -3,7 +3,6 @@ package gorest_test
 import (
 	"context"
 	"fmt"
-	gorest "gorest/pkg"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +10,8 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"gorest/gorest"
 )
 
 var _ = Describe("Client", func() {

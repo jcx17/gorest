@@ -27,37 +27,52 @@ func NewClient(options ...Option) *Client {
 	c := &Client{
 		rt:          http.DefaultTransport,
 		middlewares: []Middleware{},
-		timeout:     30 * time.Second, // default timeout
-		autoBuffer:  true,             // default fully buffer non-streaming responses
+		timeout:     30 * time.Second,
+		autoBuffer:  true,
 	}
 	for _, opt := range options {
 		opt(c)
 	}
-	// If a custom HTTP client was provided via WithHTTPClient
+
+	// Determine base RoundTripper
+	baseRt := http.DefaultTransport
+	if c.client != nil && c.client.Transport != nil {
+		baseRt = c.client.Transport
+	} else if c.rt != nil {
+		baseRt = c.rt
+	}
+
+	// Wrap with middleware
+	wrappedRt := c.wrapTransport(baseRt)
+
 	if c.client == nil {
-		c.rt = c.wrapTransport()
 		c.client = &http.Client{
-			Transport: c.rt,
+			Transport: wrappedRt,
 			Timeout:   c.timeout,
 		}
 	} else {
-		if c.client.Transport == nil {
-			c.client.Transport = c.wrapTransport()
-		}
+		c.client.Transport = wrappedRt
+		c.client.Timeout = c.timeout
 	}
+
 	return c
 }
 
-// wrapTransport wraps the underlying RoundTripper with the middleware chain.
-func (c *Client) wrapTransport() http.RoundTripper {
-	orig := c.rt
+func (c *Client) wrapTransport(base http.RoundTripper) http.RoundTripper {
 	return RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		final := func(req *http.Request) (*http.Response, error) {
-			return orig.RoundTrip(req)
+			return base.RoundTrip(req)
 		}
 		chain := ChainMiddlewares(final, c.middlewares...)
 		return chain(req)
 	})
+}
+
+// WithHTTPClient sets a custom *http.Client.
+func WithHTTPClient(client *http.Client) Option {
+	return func(c *Client) {
+		c.client = client
+	}
 }
 
 // WithTransport sets a custom http.RoundTripper for the client.
@@ -123,6 +138,19 @@ func (c *Client) Do(ctx context.Context, req *Request) (res *Response, err error
 	return &Response{Response: resp}, nil
 }
 
+// DoAsync sends the HTTP request asynchronously. It launches a goroutine
+// that calls the synchronous Do method and writes the result into a channel.
+// The channel is buffered so the goroutine will not block if the result is not immediately read.
+func (c *Client) DoAsync(ctx context.Context, req *Request) <-chan AsyncResponse {
+	responseChan := make(chan AsyncResponse, 1)
+	go func() {
+		defer close(responseChan)
+		res, err := c.Do(ctx, req)
+		responseChan <- AsyncResponse{Response: res, Error: err}
+	}()
+	return responseChan
+}
+
 // DoStream sends the HTTP request built from the provided Request and returns a Response
 // for manual streaming. The caller is responsible for closing the response.
 func (c *Client) DoStream(ctx context.Context, req *Request) (*Response, error) {
@@ -139,14 +167,64 @@ func (c *Client) DoStream(ctx context.Context, req *Request) (*Response, error) 
 	return &Response{Response: resp}, nil
 }
 
+// DoStreamAsync is similar to DoAsync but uses the DoStream method to allow manual streaming.
+func (c *Client) DoStreamAsync(ctx context.Context, req *Request) <-chan AsyncResponse {
+	responseChan := make(chan AsyncResponse, 1)
+	go func() {
+		res, err := c.DoStream(ctx, req)
+		responseChan <- AsyncResponse{Response: res, Error: err}
+	}()
+	return responseChan
+}
+
+// DoGroupAsync fires off multiple asynchronous HTTP requests concurrently,
+// one for each provided *Request, and returns a channel that will eventually
+// yield a slice of AsyncResult (one per request).
+func (c *Client) DoGroupAsync(ctx context.Context, requests ...*Request) <-chan []AsyncResponse {
+	// Create a slice of async result channels—one per request.
+	channels := make([]<-chan AsyncResponse, len(requests))
+	for i, req := range requests {
+		channels[i] = c.DoAsync(ctx, req)
+	}
+	// Use the join helper to aggregate all results.
+	return c.JoinAsyncResponses(channels...)
+}
+
+// JoinAsyncResponses accepts multiple AsyncResult channels and returns a channel that will emit
+// a slice of AsyncResult once all the provided async operations have completed.
+func (c *Client) JoinAsyncResponses(channels ...<-chan AsyncResponse) <-chan []AsyncResponse {
+	out := make(chan []AsyncResponse, 1)
+	go func() {
+		results := make([]AsyncResponse, len(channels))
+		// Wait for each async result to complete.
+		for i, ch := range channels {
+			results[i] = <-ch
+		}
+		out <- results
+	}()
+	return out
+}
+
 // Get is a convenience method for sending GET requests.
 func (c *Client) Get(ctx context.Context, url string, headers map[string]string) (*Response, error) {
 	req := NewRequest("GET", url).WithHeaders(headers)
 	return c.Do(ctx, req)
 }
 
+// GetAsync is a convenience wrapper for asynchronous GET requests.
+func (c *Client) GetAsync(ctx context.Context, url string, headers map[string]string) <-chan AsyncResponse {
+	req := NewRequest("GET", url).WithHeaders(headers)
+	return c.DoAsync(ctx, req)
+}
+
 // Post is a convenience method for sending POST requests.
 func (c *Client) Post(ctx context.Context, url string, body []byte, headers map[string]string) (*Response, error) {
 	req := NewRequest("POST", url).WithBody(body).WithHeaders(headers)
 	return c.Do(ctx, req)
+}
+
+// PostAsync is a convenience wrapper for asynchronous POST requests.
+func (c *Client) PostAsync(ctx context.Context, url string, body []byte, headers map[string]string) <-chan AsyncResponse {
+	req := NewRequest("POST", url).WithBody(body).WithHeaders(headers)
+	return c.DoAsync(ctx, req)
 }

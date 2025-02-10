@@ -241,3 +241,9 @@ func (r *Response) StreamChunks(callback func(chunk []byte), bufSizes ...int) er
 	}
 	return nil
 }
+
+// AsyncResponse represents the eventual outcome of an asynchronous HTTP call.
+type AsyncResponse struct {
+	Response *Response
+	Error    error
+}

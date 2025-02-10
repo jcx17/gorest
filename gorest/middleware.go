@@ -60,7 +60,8 @@ func RetryMiddleware(attempts int, retryDelay time.Duration) Middleware {
 				}
 				if resp.StatusCode == 429 {
 					if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
-						if delay, err := ParseRetryAfter(retryAfter); err == nil {
+						receivedAt := time.Now()
+						if delay, err := ParseRetryAfter(retryAfter, receivedAt); err == nil {
 							DrainAndClose(resp)
 							time.Sleep(delay)
 							continue
@@ -73,7 +74,11 @@ func RetryMiddleware(attempts int, retryDelay time.Duration) Middleware {
 				}
 				return resp, nil
 			}
-			return resp, err
+			// After all attempts
+			if err != nil {
+				return nil, fmt.Errorf("all retry attempts failed: %w", err)
+			}
+			return nil, fmt.Errorf("all retry attempts exhausted, last status: %d", resp.StatusCode)
 		}
 	}
 }
@@ -105,38 +110,76 @@ func LoggingMiddlewareWithConfig(logger io.Writer, config *LoggingConfig) Middle
 	}
 	return func(next RoundTripFunc) RoundTripFunc {
 		return func(req *http.Request) (*http.Response, error) {
-			var reqDump []byte
+			var reqBody []byte
 			var err error
-			if config.DumpRequestBody {
-				reqDump, err = httputil.DumpRequestOut(req, true)
-			} else {
-				reqDump, err = httputil.DumpRequestOut(req, false)
-			}
-			if err == nil {
-				_, _ = fmt.Fprintf(logger, "=== Request ===\n%s\n", config.Redactor(string(reqDump)))
-			} else {
-				_, _ = fmt.Fprintf(logger, "=== Request Dump Error: %v ===\n", err)
+
+			// Attempt to read the request body (if any)
+			if req.Body != nil {
+				reqBody, err = io.ReadAll(req.Body)
+				if err != nil {
+					// Log the error and continue with an empty body.
+					_, _ = logger.Write([]byte("=== Request Dump Error: " + err.Error() + "\n"))
+					reqBody = []byte{}
+				}
+				// Reset req.Body so it can be read downstream.
+				req.Body = io.NopCloser(bytes.NewReader(reqBody))
 			}
 
+			// Attempt to dump the request.
+			reqDump, dumpErr := httputil.DumpRequestOut(req, false)
+			if dumpErr != nil {
+				// Log the dump error instead of failing the request.
+				_, _ = logger.Write([]byte("=== Request Dump Error: " + dumpErr.Error() + "\n"))
+				reqDump = []byte{}
+			}
+
+			// Prepend a marker and (optionally) append the body.
+			outReq := []byte("=== Request ===\n")
+			outReq = append(outReq, reqDump...)
+			if config.DumpRequestBody {
+				outReq = append(outReq, "\nBody: "...)
+				outReq = append(outReq, reqBody...)
+			}
+			_, _ = logger.Write([]byte(config.Redactor(string(outReq))))
+
+			// Execute the request.
 			resp, err := next(req)
 			if err != nil {
-				_, _ = fmt.Fprintf(logger, "=== Request Error: %v ===\n", err)
+				// Log the error with the expected marker.
+				_, _ = logger.Write([]byte(config.Redactor("=== Request Error: " + err.Error() + "\n")))
 				return resp, err
 			}
 
-			var respDump []byte
+			// Process the response body.
+			var respBody []byte
+			if resp.Body != nil {
+				respBody, err = io.ReadAll(resp.Body)
+				if err != nil {
+					// Log the error and use an empty body.
+					_, _ = logger.Write([]byte("=== Response Dump Error: " + err.Error() + "\n"))
+					respBody = []byte{}
+				}
+				// Reset resp.Body so that downstream consumers can read it.
+				resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			}
+
+			// Attempt to dump the response.
+			respDump, dumpErr := httputil.DumpResponse(resp, false)
+			if dumpErr != nil {
+				_, _ = logger.Write([]byte("=== Response Dump Error: " + dumpErr.Error() + "\n"))
+				respDump = []byte{}
+			}
+
+			// Prepend the marker and (optionally) append the body.
+			outResp := []byte("=== Response ===\n")
+			outResp = append(outResp, respDump...)
 			if config.DumpResponseBody {
-				respDump, err = httputil.DumpResponse(resp, true)
-			} else {
-				respDump, err = httputil.DumpResponse(resp, false)
+				outResp = append(outResp, "\nBody: "...)
+				outResp = append(outResp, respBody...)
 			}
-			if err == nil {
-				_, _ = fmt.Fprintf(logger, "=== Response ===\n%s\n", config.Redactor(string(respDump)))
-			} else {
-				_, _ = fmt.Fprintf(logger, "=== Response Dump Error: %v ===\n", err)
-				err = nil
-			}
-			return resp, err
+			_, _ = logger.Write([]byte(config.Redactor(string(outResp))))
+
+			return resp, nil
 		}
 	}
 }

@@ -27,6 +27,7 @@ var _ = Describe("TLSTransport", func() {
 		// Create a TLSTransport with the server's TLS config.
 		var err error
 		tlsTrans, err = gorest.NewTLSTransport(
+			true,
 			server.Client().Transport.(*http.Transport).TLSClientConfig,
 			5*time.Second,
 			10,

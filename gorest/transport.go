@@ -23,7 +23,7 @@ type TLSTransport struct {
 
 // NewTLSTransport creates a new TLSTransport with the given TLS configuration, handshake timeout,
 // maximum idle connections, and idle connection timeout. HTTP/2 is enabled for the transport.
-func NewTLSTransport(tlsConfig *tls.Config, tlsHandshakeTimeout time.Duration, maxIdleCons int, idleConnTimeout time.Duration) (*TLSTransport, error) {
+func NewTLSTransport(enableHTTP2 bool, tlsConfig *tls.Config, tlsHandshakeTimeout time.Duration, maxIdleCons int, idleConnTimeout time.Duration) (*TLSTransport, error) {
 	tr := &http.Transport{
 		TLSClientConfig:     tlsConfig,
 		TLSHandshakeTimeout: tlsHandshakeTimeout,
@@ -31,9 +31,12 @@ func NewTLSTransport(tlsConfig *tls.Config, tlsHandshakeTimeout time.Duration, m
 		IdleConnTimeout:     idleConnTimeout,
 	}
 	// Enable HTTP/2 for this transport.
-	if err := http2.ConfigureTransport(tr); err != nil {
-		return nil, err
+	if enableHTTP2 {
+		if err := http2.ConfigureTransport(tr); err != nil {
+			return nil, err
+		}
 	}
+
 	return &TLSTransport{Transport: tr}, nil
 }
 

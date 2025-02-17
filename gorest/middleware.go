@@ -85,6 +85,7 @@ func RetryMiddleware(attempts int, retryDelay time.Duration) Middleware {
 
 // LoggingConfig configures the LoggingMiddleware.
 type LoggingConfig struct {
+	MaxDumpSize int
 	// DumpRequestBody controls whether the request body is included in the log.
 	DumpRequestBody bool
 	// DumpResponseBody controls whether the response body is included in the log.
@@ -99,6 +100,7 @@ func LoggingMiddlewareWithConfig(logger io.Writer, config *LoggingConfig) Middle
 	// Set default config if nil.
 	if config == nil {
 		config = &LoggingConfig{
+			MaxDumpSize:      4096,
 			DumpRequestBody:  true,
 			DumpResponseBody: true,
 			Redactor:         func(s string) string { return s },
@@ -108,6 +110,9 @@ func LoggingMiddlewareWithConfig(logger io.Writer, config *LoggingConfig) Middle
 	if config.Redactor == nil {
 		config.Redactor = func(s string) string { return s }
 	}
+	if config.MaxDumpSize <= 0 {
+		config.MaxDumpSize = 4096
+	}
 	return func(next RoundTripFunc) RoundTripFunc {
 		return func(req *http.Request) (*http.Response, error) {
 			var reqBody []byte
@@ -115,7 +120,7 @@ func LoggingMiddlewareWithConfig(logger io.Writer, config *LoggingConfig) Middle
 
 			// Attempt to read the request body (if any)
 			if req.Body != nil {
-				reqBody, err = io.ReadAll(req.Body)
+				reqBody, err = io.ReadAll(io.LimitReader(req.Body, int64(config.MaxDumpSize)))
 				if err != nil {
 					// Log the error and continue with an empty body.
 					_, _ = logger.Write([]byte("=== Request Dump Error: " + err.Error() + "\n"))
